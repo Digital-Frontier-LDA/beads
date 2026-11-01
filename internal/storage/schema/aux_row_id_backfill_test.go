@@ -254,8 +254,7 @@ func TestRekeyAuxRowIDsRunsAllTablesWhenMarkerPending(t *testing.T) {
 // expectAuxRekeySentinel mocks auxRekeyResumePending: the local_metadata
 // table-existence probe, then (when the table exists) the sentinel-row count.
 func expectAuxRekeySentinel(mock sqlmock.Sqlmock, pending bool) {
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES`).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	expectTableListed(mock, true)
 	n := 0
 	if pending {
 		n = 1
@@ -365,8 +364,7 @@ func TestRekeyAuxRowIDsKeepsSentinelOnFailure(t *testing.T) {
 	expectAuxRekeySentinel(mock, false)
 	expectSetAuxRekeySentinel(mock)
 	// First table probe fails; no DELETE of the sentinel may follow.
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS`).
-		WillReturnError(errors.New("boom"))
+	expectShowTablesError(mock, errors.New("boom"))
 
 	if _, err := rekeyAuxRowIDs(context.Background(), db, auxRekeyPassInitial.shippedMainVersion-1, auxRekeyPassInitial); err == nil {
 		t.Fatal("expected the table failure to propagate")

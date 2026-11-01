@@ -58,6 +58,18 @@ type migrateLockOptions struct {
 	freshBootstrapHeal *freshBootstrapHealRequest
 	lockedPreparation  *lockedPreparationRequest
 	databaseSelector   DatabaseSelector
+	serverIdentity     string
+}
+
+// WithServerIdentity names the server conn talks to (a transport endpoint
+// such as "tcp:127.0.0.1:3308" or "unix:/path", never credentials). It scopes
+// the process-wide verified-cursor memo (cursor_memo.go) to that server, so a
+// database verified on one server says nothing about a same-named database on
+// another. Without it the memo stays off and every cursor read probes.
+func WithServerIdentity(identity string) MigrateLockOption {
+	return func(o *migrateLockOptions) {
+		o.serverIdentity = identity
+	}
 }
 
 type freshBootstrapHealRequest struct {
@@ -215,6 +227,9 @@ func MigrateUpWithLock(ctx context.Context, conn *sql.Conn, databaseName string,
 	for _, opt := range opts {
 		opt(&o)
 	}
+	// Every cursor read below may reuse this process's earlier verification
+	// of databaseName's at-latest cursor on this same server (cursor_memo.go).
+	ctx = withVerifiedCursorMemo(ctx, o.serverIdentity, databaseName)
 
 	// Steady-state fast path. In the overwhelmingly common case the database
 	// is already at this binary's schema and the whole locked pass is a probe

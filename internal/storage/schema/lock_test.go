@@ -373,8 +373,7 @@ func expectOnePendingMigration(t *testing.T, mock sqlmock.Sqlmock) {
 	expectDoltStatusRows(mock)
 	// MigrateUp probes the aux-rekey crash sentinel (bd-578h9.16); this
 	// mocked world has no local_metadata table, so no crashed pass.
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES`).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectTableListed(mock, false)
 	// MigrateUp captures the pre-pass main cursor for the aux re-key
 	// watershed (bd-578h9.4) before the main migrations run.
 	expectCursorProbe(mock, "schema_migrations", true)
@@ -389,13 +388,9 @@ func expectOnePendingMigration(t *testing.T, mock sqlmock.Sqlmock) {
 		// then the local wisp_dependencies table; this mocked world has all
 		// issue columns and no local wisp_dependencies table, so no ALTERs follow.
 		for _, col := range []string{"hook_bead", "role_bead", "agent_state", "last_activity", "role_type", "rig"} {
-			mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS`).
-				WithArgs("issues", col).
-				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+			expectColumnProbe(mock, "issues", col, true)
 		}
-		mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES`).
-			WithArgs("wisp_dependencies").
-			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		expectTableProbe(mock, "wisp_dependencies", false)
 	}
 	// Per-step commit (#4566) snapshots the working set before the migration
 	// runs so it can force-stage only the tables this step newly dirties.
@@ -440,8 +435,7 @@ func expectOnePendingMigration(t *testing.T, mock sqlmock.Sqlmock) {
 	expectIgnoredSentinelProbes(mock, true)
 	expectDoltStatusRows(mock)
 	expectDoltStatusRows(mock)
-	mock.ExpectQuery("(?s)SELECT t\\.TABLE_NAME\\s+FROM INFORMATION_SCHEMA\\.TABLES t").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).AddRow("schema_migrations"))
+	expectCommittableTables(mock, "schema_migrations")
 	// DOLT_ADD and DOLT_COMMIT run through DrainCall (QueryContext) so their
 	// proc result sets are consumed on the pinned conn; mock them as queries.
 	mock.ExpectQuery(regexp.QuoteMeta("CALL DOLT_ADD('-f', ?)")).
@@ -449,17 +443,6 @@ func expectOnePendingMigration(t *testing.T, mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows([]string{"status"}))
 	mock.ExpectQuery(regexp.QuoteMeta("CALL DOLT_COMMIT('-m', 'schema: apply migrations')")).
 		WillReturnRows(sqlmock.NewRows([]string{"hash"}))
-}
-
-// expectColumnExists mocks the INFORMATION_SCHEMA.COLUMNS probe still used by
-// the dependency/aux id-column re-key paths (dep_id_backfill.go).
-func expectColumnExists(mock sqlmock.Sqlmock, present bool) {
-	n := 0
-	if present {
-		n = 1
-	}
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS`).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(n))
 }
 
 // expectContentHashColumnExists mocks the idempotent ensureContentHashColumn
@@ -474,20 +457,6 @@ func expectContentHashColumnExists(mock sqlmock.Sqlmock) {
 func expectScalar(mock sqlmock.Sqlmock, query, column string, value any) {
 	mock.ExpectQuery(regexp.QuoteMeta(query)).
 		WillReturnRows(sqlmock.NewRows([]string{column}).AddRow(value))
-}
-
-// expectCursorProbe mocks the information_schema existence probe that
-// migrationSource.currentVersion issues before it ever reads the cursor
-// table. The probe was added by be-bv7x so a not-yet-created cursor table
-// never poisons the pooled Dolt session with a failing statement.
-func expectCursorProbe(mock sqlmock.Sqlmock, table string, exists bool) {
-	present := 0
-	if exists {
-		present = 1
-	}
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM information_schema\.tables`).
-		WithArgs(table).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(present))
 }
 
 func expectDoltStatusRows(mock sqlmock.Sqlmock) {
@@ -526,8 +495,7 @@ func expectDirtyGuardRefusal(t *testing.T, mock sqlmock.Sqlmock) {
 	// committableDirtyTables re-reads dolt_status (ignored tables excluded).
 	expectDoltStatusDirtyEvents(mock)
 	// auxRekeyResumePending: no local_metadata table, no crashed rekey pass.
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES`).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectTableListed(mock, false)
 	// pendingMigrationDirtyTables: cursor read, then pending 0062's SQL
 	// touches `events` -> DirtyTablesError.
 	expectCursorProbe(mock, "schema_migrations", true)
@@ -651,27 +619,6 @@ func TestMigrateUpWithLockFreshBootstrapHealResetsAndRetries(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet SQL expectations: %v", err)
-	}
-}
-
-// expectIgnoredSentinelProbes mocks the INFORMATION_SCHEMA lookups
-// currentVersion issues to confirm a non-zero ignored cursor against the
-// schema it claims (gh 5033). They fire only for a non-zero cursor, in
-// ignoredSource's table then column sentinel order.
-func expectIgnoredSentinelProbes(mock sqlmock.Sqlmock, present bool) {
-	count := 0
-	if present {
-		count = 1
-	}
-	for range ignoredSource.sentinelTables {
-		mock.ExpectQuery(regexp.QuoteMeta("FROM INFORMATION_SCHEMA.TABLES")).
-			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(count))
-	}
-	if present {
-		for range ignoredSource.sentinelColumns {
-			mock.ExpectQuery(regexp.QuoteMeta("FROM INFORMATION_SCHEMA.COLUMNS")).
-				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-		}
 	}
 }
 

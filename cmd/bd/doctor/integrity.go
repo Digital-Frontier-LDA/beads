@@ -15,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -248,12 +249,8 @@ func loadDependencyEdges(db *sql.DB, pageSize, maxEdges int) (map[string][]strin
 // NULL never satisfies `id > ?`, so paginating over such rows would silently
 // drop their edges from the graph.
 func dependencyIDPaginationUsable(ctx context.Context, tx *sql.Tx, table string) bool {
-	var idColumns int
-	err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM information_schema.columns
-		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = 'id'`,
-		table).Scan(&idColumns)
-	if err != nil || idColumns == 0 {
+	hasID, err := schema.ColumnExists(ctx, tx, table, "id")
+	if err != nil || !hasID {
 		return false
 	}
 	var one int

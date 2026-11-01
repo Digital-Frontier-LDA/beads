@@ -20,8 +20,7 @@ func TestRekeyDependencyTableRewritesOnlyDivergentRows(t *testing.T) {
 	defer db.Close()
 
 	// id column present.
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS`).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	expectColumnExists(mock, true)
 
 	// Two rows: one carrying a legacy random id, one already deterministic.
 	randomRow := "random-uuid-aaaa"
@@ -57,8 +56,7 @@ func TestRekeyDependencyTableSkipsMissingTable(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS`).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectColumnExists(mock, false)
 
 	wrote, err := rekeyDependencyTable(context.Background(), db, "dependencies")
 	if err != nil {
@@ -81,8 +79,7 @@ func TestRekeyDependencyTableIdempotent(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS`).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	expectColumnExists(mock, true)
 	mock.ExpectQuery(`SELECT id, issue_id, COALESCE\(.*\) FROM dependencies`).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "issue_id", "target"}).
 			AddRow(depid.New("a", "b"), "a", "b"))

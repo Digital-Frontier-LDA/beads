@@ -1,8 +1,11 @@
 package fix
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
 // CloneLocalFK describes a foreign key held by a clone-local (dolt_ignored,
@@ -69,14 +72,11 @@ func ScanSeveredCloneLocalFKs(path string) ([]SeveredCloneLocalFK, error) {
 func scanSeveredCloneLocalFKs(db *sql.DB) ([]SeveredCloneLocalFK, error) {
 	var severed []SeveredCloneLocalFK
 	for _, fk := range CloneLocalFKs {
-		var tables int
-		if err := db.QueryRow(
-			`SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-			fk.Table,
-		).Scan(&tables); err != nil {
+		hasTable, err := schema.TableExists(context.Background(), db, fk.Table)
+		if err != nil {
 			return nil, fmt.Errorf("check %s exists: %w", fk.Table, err)
 		}
-		if tables == 0 {
+		if !hasTable {
 			continue
 		}
 

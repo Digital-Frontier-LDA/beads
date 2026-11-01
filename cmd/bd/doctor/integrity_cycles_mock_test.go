@@ -17,12 +17,18 @@ var errTableNotFound = errors.New("table not found: wisp_dependencies")
 // query runs inside the single BeginTx snapshot.
 
 func expectIDPaginationProbe(mock sqlmock.Sqlmock, table string, usable bool) {
-	cols := mock.ExpectQuery(`information_schema\.columns`).WithArgs(table)
+	// schema.ColumnExists: SHOW TABLES, then SHOW COLUMNS on the listed table.
+	mock.ExpectQuery(`^SHOW TABLES$`).
+		WillReturnRows(sqlmock.NewRows([]string{"Tables_in_beads"}).AddRow(table))
+	fields := sqlmock.NewRows([]string{"Field", "Type", "Null", "Key", "Default", "Extra"}).
+		AddRow("issue_id", "varchar(255)", "NO", "", nil, "")
+	if usable {
+		fields.AddRow("id", "char(36)", "NO", "PRI", nil, "")
+	}
+	mock.ExpectQuery("^SHOW COLUMNS FROM `" + table + "`$").WillReturnRows(fields)
 	if !usable {
-		cols.WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 		return
 	}
-	cols.WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	// No rows → sql.ErrNoRows → no NULL ids → pagination usable.
 	mock.ExpectQuery(`SELECT 1 FROM ` + table + ` WHERE id IS NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))

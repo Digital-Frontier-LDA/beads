@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
 // labelTables are the label tables scanned for whitespace damage, mirroring
@@ -150,12 +152,5 @@ func sortLabelRows(rows []LabelRow) {
 }
 
 func labelTableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
-	var count int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
-		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-		table).Scan(&count); err != nil {
-		return false, err
-	}
-	return count > 0, nil
+	return schema.TableExists(ctx, db, table)
 }

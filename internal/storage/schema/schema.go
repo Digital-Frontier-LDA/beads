@@ -973,33 +973,68 @@ func stageSchemaTables(ctx context.Context, db DBConn, dirtyBefore map[string]di
 	return len(tables) > 0, nil
 }
 
+// existingCommittableTables lists the current database's base tables that no
+// dolt_ignore pattern ignores. SHOW FULL TABLES rather than
+// INFORMATION_SCHEMA.TABLES (see probe.go); the ignore test keeps the original
+// SQL LIKE semantics by asking dolt_ignore per table rather than re-implementing
+// LIKE and its collation in Go. It runs only when a migration pass commits.
 func existingCommittableTables(ctx context.Context, db DBConn) (map[string]struct{}, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT t.TABLE_NAME
-		FROM INFORMATION_SCHEMA.TABLES t
-		WHERE t.TABLE_SCHEMA = DATABASE()
-		  AND t.TABLE_TYPE = 'BASE TABLE'
-		  AND NOT EXISTS (
-			SELECT 1 FROM dolt_ignore di
-			WHERE di.ignored = 1
-			  AND t.TABLE_NAME LIKE di.pattern
-		  )
-	`)
+	rows, err := db.QueryContext(ctx, "SHOW FULL TABLES")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	tables := make(map[string]struct{})
+	cols, err := rows.Columns()
+	if err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	typeIdx := -1
+	for i, c := range cols {
+		if strings.EqualFold(c, "Table_type") {
+			typeIdx = i
+		}
+	}
+	if typeIdx < 1 {
+		_ = rows.Close()
+		return nil, fmt.Errorf("SHOW FULL TABLES: no Table_type column (got %v)", cols)
+	}
+	cells := make([]sql.RawBytes, len(cols))
+	dest := make([]any, len(cols))
+	for i := range cells {
+		dest[i] = &cells[i]
+	}
+	var base []string
 	for rows.Next() {
-		var table string
-		if err := rows.Scan(&table); err != nil {
+		if err := rows.Scan(dest...); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
-		tables[table] = struct{}{}
+		if string(cells[typeIdx]) == "BASE TABLE" {
+			base = append(base, string(cells[0]))
+		}
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return nil, err
+	}
+	// Close before issuing the per-table queries: db may be a single pinned
+	// connection, which cannot run a second statement mid-result-set.
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	tables := make(map[string]struct{}, len(base))
+	for _, table := range base {
+		var ignored int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM dolt_ignore WHERE ignored = 1 AND ? LIKE pattern",
+			table,
+		).Scan(&ignored); err != nil {
+			return nil, fmt.Errorf("checking dolt_ignore for %s: %w", table, err)
+		}
+		if ignored == 0 {
+			tables[table] = struct{}{}
+		}
 	}
 	return tables, nil
 }
@@ -1212,19 +1247,19 @@ func (m migrationSource) currentVersion(ctx context.Context, db DBConn) (int, er
 	// not-yet-created cursor table poisons the pooled connection: tables
 	// created afterwards on other connections stay invisible to this one for
 	// the rest of its life in the pool (be-bv7x).
-	var cursorExists int
-	if err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
-		m.cursorTable,
-	).Scan(&cursorExists); err != nil {
+	//
+	// SHOW TABLES is that always-succeeding query, scoped to the current
+	// database (see probe.go for why not INFORMATION_SCHEMA.TABLES).
+	cursorExists, err := TableExists(ctx, db, m.cursorTable)
+	if err != nil {
 		return 0, fmt.Errorf("probing %s existence: %w", m.cursorTable, err)
 	}
-	if cursorExists == 0 {
+	if !cursorExists {
 		return 0, nil
 	}
 
 	var current int
-	err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM "+m.cursorTable).Scan(&current)
+	err = db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM "+m.cursorTable).Scan(&current)
 	if err != nil && err != sql.ErrNoRows {
 		if dberrors.IsTableNotExist(err) {
 			return 0, nil
@@ -1243,12 +1278,24 @@ func (m migrationSource) currentVersion(ctx context.Context, db DBConn) (int, er
 	// no wisps tables. atLatest() then short-circuits migrationWorkNeeded()
 	// and the series never re-runs, surfacing much later and much further away
 	// as "table not found: wisp_dependencies" on `bd close`.
+	//
+	// Once this process has seen the schema corroborate an at-latest cursor
+	// for this database, it does not ask again (beads-jwn): see
+	// verifiedCursorMemo for the scope and why it is sound.
+	memoKey, memoOK := verifiedCursorMemoKey(ctx, m)
+	atLatest := current >= m.latest()
+	if memoOK && atLatest && verifiedCursorMemoHas(memoKey) {
+		return current, nil
+	}
 	contradicted, cerr := m.cursorContradictedBySchema(ctx, db)
 	if cerr != nil {
 		return 0, cerr
 	}
 	if contradicted {
 		return 0, nil
+	}
+	if memoOK && atLatest {
+		verifiedCursorMemoStore(memoKey)
 	}
 	return current, nil
 }
@@ -1289,16 +1336,7 @@ func (m migrationSource) cursorContradictedBySchema(ctx context.Context, db DBCo
 // sentinelTableExists is a function variable for the same reason
 // issueRowCounter is: it lets the cursor-reality tests exercise the real
 // decision without a live database.
-var sentinelTableExists = func(ctx context.Context, db DBConn, table string) (bool, error) {
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
-		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-		table).Scan(&n); err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
+var sentinelTableExists = schemaTableExists
 
 var sentinelColumnExists = schemaColumnExists
 

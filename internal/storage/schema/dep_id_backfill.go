@@ -95,12 +95,5 @@ func rekeyDependencyTable(ctx context.Context, db DBConn, table string) (bool, e
 
 // columnExists reports whether table.column is present in the current schema.
 func columnExists(ctx context.Context, db DBConn, table, column string) (bool, error) {
-	var count int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
-		table, column).Scan(&count); err != nil {
-		return false, err
-	}
-	return count > 0, nil
+	return ColumnExists(ctx, db, table, column)
 }

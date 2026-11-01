@@ -233,7 +233,8 @@ func (p *doltSQLProvider) initSchemaAttempt(ctx context.Context, database string
 	}
 	if _, err := schema.MigrateUpWithLock(ctx, conn, database,
 		schema.WithDatabaseSelector(selectProbeDatabase),
-		schema.WithLockedPreparation(p.serverEndpoint, preparer.prepare)); err != nil {
+		schema.WithLockedPreparation(p.serverEndpoint, preparer.prepare),
+		schema.WithServerIdentity(p.serverEndpoint)); err != nil {
 		return classifyInitSchemaError(err)
 	}
 	return nil
