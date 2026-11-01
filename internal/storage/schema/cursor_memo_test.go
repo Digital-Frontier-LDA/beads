@@ -8,6 +8,13 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+// Two servers, as transport endpoints: the identities WithServerIdentity
+// carries in production.
+const (
+	serverA = "tcp:127.0.0.1:3308"
+	serverB = "tcp:10.0.0.2:3308"
+)
+
 // expectIgnoredCursorRead mocks one ignoredSource.currentVersion read up to,
 // and excluding, the sentinel probes.
 func expectIgnoredCursorRead(mock sqlmock.Sqlmock, version int) {
@@ -36,7 +43,7 @@ func readIgnoredCursorTwice(t *testing.T, ctx context.Context, db DBConn) (first
 func TestVerifiedCursorMemoSkipsSecondProbe(t *testing.T) {
 	enableVerifiedCursorMemo(t)
 	db, mock := newProbeMock(t)
-	ctx := withVerifiedCursorMemo(context.Background(), "beads")
+	ctx := withVerifiedCursorMemo(context.Background(), serverA, "beads")
 
 	expectIgnoredCursorRead(mock, LatestIgnoredVersion())
 	expectIgnoredSentinelProbes(mock, true)
@@ -53,7 +60,7 @@ func TestVerifiedCursorMemoSkipsSecondProbe(t *testing.T) {
 func TestVerifiedCursorMemoNeverRecordsContradictedCursor(t *testing.T) {
 	enableVerifiedCursorMemo(t)
 	db, mock := newProbeMock(t)
-	ctx := withVerifiedCursorMemo(context.Background(), "beads")
+	ctx := withVerifiedCursorMemo(context.Background(), serverA, "beads")
 
 	for range 2 {
 		expectIgnoredCursorRead(mock, LatestIgnoredVersion())
@@ -71,7 +78,7 @@ func TestVerifiedCursorMemoNeverRecordsContradictedCursor(t *testing.T) {
 func TestVerifiedCursorMemoNeverRecordsMissingSentinelColumn(t *testing.T) {
 	enableVerifiedCursorMemo(t)
 	db, mock := newProbeMock(t)
-	ctx := withVerifiedCursorMemo(context.Background(), "beads")
+	ctx := withVerifiedCursorMemo(context.Background(), serverA, "beads")
 
 	for range 2 {
 		expectIgnoredCursorRead(mock, LatestIgnoredVersion())
@@ -93,7 +100,7 @@ func TestVerifiedCursorMemoNeverRecordsMissingSentinelColumn(t *testing.T) {
 func TestVerifiedCursorMemoIgnoresCursorBehindLatest(t *testing.T) {
 	enableVerifiedCursorMemo(t)
 	db, mock := newProbeMock(t)
-	ctx := withVerifiedCursorMemo(context.Background(), "beads")
+	ctx := withVerifiedCursorMemo(context.Background(), serverA, "beads")
 
 	behind := LatestIgnoredVersion() - 1
 	for range 2 {
@@ -111,7 +118,7 @@ func TestVerifiedCursorMemoIgnoresCursorBehindLatest(t *testing.T) {
 func TestVerifiedCursorMemoIgnoresProbeError(t *testing.T) {
 	enableVerifiedCursorMemo(t)
 	db, mock := newProbeMock(t)
-	ctx := withVerifiedCursorMemo(context.Background(), "beads")
+	ctx := withVerifiedCursorMemo(context.Background(), serverA, "beads")
 
 	boom := errors.New("connection reset")
 	expectIgnoredCursorRead(mock, LatestIgnoredVersion())
@@ -151,10 +158,10 @@ func TestVerifiedCursorMemoIsPerDatabase(t *testing.T) {
 		expectIgnoredCursorRead(mock, LatestIgnoredVersion())
 		expectIgnoredSentinelProbes(mock, true)
 	}
-	if _, err := ignoredSource.currentVersion(withVerifiedCursorMemo(context.Background(), "df_grafana"), db); err != nil {
+	if _, err := ignoredSource.currentVersion(withVerifiedCursorMemo(context.Background(), serverA, "df_grafana"), db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ignoredSource.currentVersion(withVerifiedCursorMemo(context.Background(), "akash_console"), db); err != nil {
+	if _, err := ignoredSource.currentVersion(withVerifiedCursorMemo(context.Background(), serverA, "akash_console"), db); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -180,6 +187,64 @@ func TestMigrateUpWithLockMemoizesVerifiedCursor(t *testing.T) {
 	expectDoltIgnoreRead(mock, unqualifiedDoltIgnore, seededIgnorePatterns(LatestVersion()))
 	expectMigrationLockProbe(mock, "testdb", 1)
 
+	for i := range 2 {
+		if _, err := MigrateUpWithLock(context.Background(), conn, "testdb", WithServerIdentity(serverA)); err != nil {
+			t.Fatalf("MigrateUpWithLock #%d: %v", i+1, err)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+// TestVerifiedCursorMemoIsPerServer is the same-name/different-server
+// regression (PR #23 review): verifying "beads" on server A must not let the
+// first read of "beads" on server B skip its sentinel probes. B here has an
+// at-latest cursor but no wisp tables, so a memo keyed by database name alone
+// would report B at latest and never heal it.
+func TestVerifiedCursorMemoIsPerServer(t *testing.T) {
+	enableVerifiedCursorMemo(t)
+	db, mock := newProbeMock(t)
+
+	expectIgnoredCursorRead(mock, LatestIgnoredVersion())
+	expectIgnoredSentinelProbes(mock, true)
+	expectIgnoredCursorRead(mock, LatestIgnoredVersion())
+	expectIgnoredSentinelProbes(mock, false)
+
+	if got, err := ignoredSource.currentVersion(withVerifiedCursorMemo(context.Background(), serverA, "beads"), db); err != nil || got != LatestIgnoredVersion() {
+		t.Fatalf("server A read = (%d, %v), want (%d, nil)", got, err, LatestIgnoredVersion())
+	}
+	got, err := ignoredSource.currentVersion(withVerifiedCursorMemo(context.Background(), serverB, "beads"), db)
+	if err != nil {
+		t.Fatalf("server B read: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("server B read = %d, want 0: server A's verification of a same-named database skipped B's sentinel probes", got)
+	}
+}
+
+// With no server identity the memo stays off, even with a database name: a
+// name alone would alias same-named databases across servers.
+func TestVerifiedCursorMemoOffWithoutServerIdentity(t *testing.T) {
+	enableVerifiedCursorMemo(t)
+	db, mock := newProbeMock(t)
+
+	for range 2 {
+		expectIgnoredCursorRead(mock, LatestIgnoredVersion())
+		expectIgnoredSentinelProbes(mock, true)
+	}
+	readIgnoredCursorTwice(t, withVerifiedCursorMemo(context.Background(), "", "beads"), db)
+}
+
+// MigrateUpWithLock without WithServerIdentity never memoizes: two converged
+// opens both run the full probe sequence.
+func TestMigrateUpWithLockWithoutServerIdentityProbesEveryOpen(t *testing.T) {
+	enableVerifiedCursorMemo(t)
+	conn, mock, cleanup := newMockConn(t)
+	defer cleanup()
+
+	expectConvergedProbe(mock, "testdb")
+	expectConvergedProbe(mock, "testdb")
 	for i := range 2 {
 		if _, err := MigrateUpWithLock(context.Background(), conn, "testdb"); err != nil {
 			t.Fatalf("MigrateUpWithLock #%d: %v", i+1, err)

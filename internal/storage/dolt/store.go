@@ -2617,6 +2617,9 @@ func initSchemaOnDBWithBootstrapHeal(
 	if bootstrapHeal != nil {
 		opts = append(opts, schema.WithFreshBootstrapHeal(bootstrapHeal, endpoint))
 	}
+	// endpoint scopes the verified-cursor memo to this server; empty (the
+	// initSchemaOnDB path) leaves the memo off.
+	opts = append(opts, schema.WithServerIdentity(endpoint))
 	applied, err := schema.MigrateUpWithLock(ctx, conn, dbName, opts...)
 	if err != nil {
 		return applied, fmt.Errorf("schema migration: %w", err)

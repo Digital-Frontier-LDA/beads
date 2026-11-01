@@ -24,7 +24,10 @@ import (
 //     the heal path (cursor_reality_test.go) runs exactly as before on every
 //     read until the schema really does corroborate the cursor.
 //   - The memo is opt-in through the context (withVerifiedCursorMemo), and
-//     only MigrateUpWithLock opts in, keyed by its databaseName. That is the
+//     only MigrateUpWithLock opts in, keyed by the server identity its caller
+//     passes (WithServerIdentity: a transport endpoint, never credentials)
+//     plus its databaseName. Two servers each holding a database named
+//     "beads" are two keys; with no server identity the memo stays off. That is the
 //     shared sql-server path where each probe costs a cross-database scan and
 //     where one process opens the database through more than one layer.
 //     Embedded Dolt (bare MigrateUp) never opts in: its tests drop sentinel
@@ -47,13 +50,22 @@ var verifiedCursorMemoOff bool
 
 type verifiedCursorMemoCtxKey struct{}
 
+// verifiedCursorScope is the memo scope a context carries: which server, and
+// which database on it.
+type verifiedCursorScope struct {
+	server   string
+	database string
+}
+
 // withVerifiedCursorMemo opts the reads made under ctx into the memo for
-// databaseName. An empty name leaves ctx unchanged (memo off).
-func withVerifiedCursorMemo(ctx context.Context, databaseName string) context.Context {
-	if databaseName == "" {
+// databaseName on the server named by serverIdentity. Either one empty leaves
+// ctx unchanged (memo off): a database name alone would alias same-named
+// databases on different servers.
+func withVerifiedCursorMemo(ctx context.Context, serverIdentity, databaseName string) context.Context {
+	if serverIdentity == "" || databaseName == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, verifiedCursorMemoCtxKey{}, databaseName)
+	return context.WithValue(ctx, verifiedCursorMemoCtxKey{}, verifiedCursorScope{server: serverIdentity, database: databaseName})
 }
 
 // verifiedCursorMemoKey returns the memo key for m under ctx, and whether the
@@ -63,12 +75,13 @@ func verifiedCursorMemoKey(ctx context.Context, m migrationSource) (string, bool
 	if verifiedCursorMemoOff || (len(m.sentinelTables) == 0 && len(m.sentinelColumns) == 0) {
 		return "", false
 	}
-	name, _ := ctx.Value(verifiedCursorMemoCtxKey{}).(string)
-	if name == "" {
+	scope, ok := ctx.Value(verifiedCursorMemoCtxKey{}).(verifiedCursorScope)
+	if !ok || scope.server == "" || scope.database == "" {
 		return "", false
 	}
-	// NUL cannot appear in a database or table name, so the key is unambiguous.
-	return name + "\x00" + m.cursorTable, true
+	// NUL cannot appear in an endpoint, database or table name, so the key is
+	// unambiguous.
+	return scope.server + "\x00" + scope.database + "\x00" + m.cursorTable, true
 }
 
 func verifiedCursorMemoHas(key string) bool {

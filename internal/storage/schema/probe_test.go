@@ -183,3 +183,23 @@ func TestProbeQuotesIdentifiers(t *testing.T) {
 		t.Fatalf("ColumnExists = (%v, %v), want (true, nil)", got, err)
 	}
 }
+
+// A hostile table name stays ONE identifier: the backtick that would close the
+// quoting is doubled, so the "; DROP TABLE" text lands inside the quoted name
+// and the statement sent is exactly one SHOW KEYS. sqlmock's anchored match
+// rejects anything else.
+func TestProbeHostileNameStaysOneIdentifier(t *testing.T) {
+	const hostile = "x`; DROP TABLE issues; -- "
+	want := "SHOW KEYS FROM `x``; DROP TABLE issues; -- `"
+	if got := "SHOW KEYS FROM " + quoteIdent(hostile); got != want {
+		t.Fatalf("statement = %q, want %q", got, want)
+	}
+	db, mock := newProbeMock(t)
+	expectShowTables(mock, hostile)
+	mock.ExpectQuery("^" + regexp.QuoteMeta(want) + "$").
+		WillReturnRows(sqlmock.NewRows([]string{"Table", "Non_unique", "Key_name"}).AddRow(hostile, 0, "PRIMARY"))
+	got, err := HasPrimaryKey(context.Background(), db, hostile)
+	if err != nil || !got {
+		t.Fatalf("HasPrimaryKey = (%v, %v), want (true, nil)", got, err)
+	}
+}
