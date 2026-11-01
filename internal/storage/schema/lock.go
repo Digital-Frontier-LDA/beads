@@ -215,6 +215,9 @@ func MigrateUpWithLock(ctx context.Context, conn *sql.Conn, databaseName string,
 	for _, opt := range opts {
 		opt(&o)
 	}
+	// Every cursor read below may reuse this process's earlier verification
+	// of databaseName's at-latest cursor (cursor_memo.go).
+	ctx = withVerifiedCursorMemo(ctx, databaseName)
 
 	// Steady-state fast path. In the overwhelmingly common case the database
 	// is already at this binary's schema and the whole locked pass is a probe

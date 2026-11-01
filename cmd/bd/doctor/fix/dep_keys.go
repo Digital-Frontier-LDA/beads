@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/storage/depid"
+	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
 // depKeyTables are the edge tables carrying the deterministic surrogate key
@@ -171,12 +172,5 @@ func repairDependencyKeys(ctx context.Context, db *sql.DB, verbose bool) error {
 
 // depKeyColumnExists reports whether table.column is present in the current schema.
 func depKeyColumnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
-	var count int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
-		table, column).Scan(&count); err != nil {
-		return false, err
-	}
-	return count > 0, nil
+	return schema.ColumnExists(ctx, db, table, column)
 }

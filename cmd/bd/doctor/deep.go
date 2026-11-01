@@ -2,6 +2,7 @@
 package doctor
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
 // DeepValidationResult holds all deep validation check results
@@ -310,13 +312,16 @@ func checkMailThreadIntegrity(db *sql.DB) DoctorCheck {
 
 	// Check if both dependency tables can supply thread_id before using the
 	// union query below.
-	var hasThreadID bool
-	err := db.QueryRow(`
-		SELECT COUNT(DISTINCT TABLE_NAME) = 2 FROM INFORMATION_SCHEMA.COLUMNS
-		WHERE TABLE_SCHEMA = DATABASE()
-		  AND TABLE_NAME IN ('dependencies', 'wisp_dependencies')
-		  AND COLUMN_NAME = 'thread_id'
-	`).Scan(&hasThreadID)
+	hasThreadID := true
+	var err error
+	for _, table := range []string{"dependencies", "wisp_dependencies"} {
+		var has bool
+		has, err = schema.ColumnExists(context.Background(), db, table, "thread_id")
+		if err != nil || !has {
+			hasThreadID = false
+			break
+		}
+	}
 	if err != nil {
 		check.Status = StatusWarning
 		check.Message = "Unable to check thread integrity schema"

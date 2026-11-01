@@ -62,14 +62,11 @@ var auxRekeyPasses = []auxRekeyPass{auxRekeyPassInitial, auxRekeyPassDerivedInse
 // therefore clone-local, so a fresh clone lacks it until something recreates
 // it — setAuxRekeyInProgress creates it on demand.
 func auxRekeyResumePending(ctx context.Context, db DBConn, sentinelKey string) (bool, error) {
-	var tableCount int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
-		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'local_metadata'`,
-	).Scan(&tableCount); err != nil {
+	hasTable, err := TableExists(ctx, db, "local_metadata")
+	if err != nil {
 		return false, err
 	}
-	if tableCount == 0 {
+	if !hasTable {
 		return false, nil
 	}
 	var n int
@@ -86,14 +83,11 @@ func auxRekeyResumePending(ctx context.Context, db DBConn, sentinelKey string) (
 // many passes exist — it feeds MigrateUp's dirty-table exemption, which only
 // needs to know that some rekey rewrite is about to resume.
 func anyAuxRekeyResumePending(ctx context.Context, db DBConn) (bool, error) {
-	var tableCount int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
-		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'local_metadata'`,
-	).Scan(&tableCount); err != nil {
+	hasTable, err := TableExists(ctx, db, "local_metadata")
+	if err != nil {
 		return false, err
 	}
-	if tableCount == 0 {
+	if !hasTable {
 		return false, nil
 	}
 	placeholders := make([]string, len(auxRekeyPasses))

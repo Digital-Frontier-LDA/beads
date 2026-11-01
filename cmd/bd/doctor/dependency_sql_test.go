@@ -23,8 +23,7 @@ func TestCheckMailThreadIntegrityRequiresBothDependencyThreadColumns(t *testing.
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta("TABLE_NAME IN ('dependencies', 'wisp_dependencies')")).
-		WillReturnRows(sqlmock.NewRows([]string{"has_thread_id"}).AddRow(false))
+	expectThreadIDColumns(mock, true, false)
 
 	check := checkMailThreadIntegrity(db)
 	if check.Status != StatusOK {
@@ -45,8 +44,7 @@ func TestCheckMailThreadIntegrityWarnsWhenSchemaGateFails(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta("TABLE_NAME IN ('dependencies', 'wisp_dependencies')")).
-		WillReturnError(errors.New("information schema unavailable"))
+	mock.ExpectQuery(`^SHOW TABLES$`).WillReturnError(errors.New("information schema unavailable"))
 
 	check := checkMailThreadIntegrity(db)
 	if check.Status != StatusWarning {
@@ -70,8 +68,7 @@ func TestCheckMailThreadIntegrityRunsUnionWhenBothTablesHaveThreadID(t *testing.
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta("TABLE_NAME IN ('dependencies', 'wisp_dependencies')")).
-		WillReturnRows(sqlmock.NewRows([]string{"has_thread_id"}).AddRow(true))
+	expectThreadIDColumns(mock, true, true)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT d.thread_id, COUNT(*) as refs")).
 		WillReturnRows(sqlmock.NewRows([]string{"thread_id", "refs"}))
 
@@ -94,8 +91,7 @@ func TestCheckMailThreadIntegrityWarnsForOrphanedUnionRows(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta("TABLE_NAME IN ('dependencies', 'wisp_dependencies')")).
-		WillReturnRows(sqlmock.NewRows([]string{"has_thread_id"}).AddRow(true))
+	expectThreadIDColumns(mock, true, true)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT d.thread_id, COUNT(*) as refs")).
 		WillReturnRows(sqlmock.NewRows([]string{"thread_id", "refs"}).AddRow("missing-thread", 2))
 
@@ -111,5 +107,26 @@ func TestCheckMailThreadIntegrityWarnsForOrphanedUnionRows(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// expectThreadIDColumns mocks the mail-thread schema gate: schema.ColumnExists
+// for dependencies.thread_id, then (only if present) wisp_dependencies.thread_id.
+func expectThreadIDColumns(mock sqlmock.Sqlmock, depHas, wispHas bool) {
+	for _, tc := range []struct {
+		table string
+		has   bool
+	}{{"dependencies", depHas}, {"wisp_dependencies", wispHas}} {
+		mock.ExpectQuery(`^SHOW TABLES$`).
+			WillReturnRows(sqlmock.NewRows([]string{"Tables_in_beads"}).AddRow("dependencies").AddRow("wisp_dependencies"))
+		fields := sqlmock.NewRows([]string{"Field", "Type", "Null", "Key", "Default", "Extra"}).
+			AddRow("issue_id", "varchar(255)", "NO", "", nil, "")
+		if tc.has {
+			fields.AddRow("thread_id", "varchar(255)", "YES", "", nil, "")
+		}
+		mock.ExpectQuery("^SHOW COLUMNS FROM `" + tc.table + "`$").WillReturnRows(fields)
+		if !tc.has {
+			return
+		}
 	}
 }

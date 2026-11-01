@@ -10,7 +10,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-// stubSentinelTables replaces the INFORMATION_SCHEMA probe with a fixed answer
+// stubSentinelTables replaces the SHOW TABLES probe with a fixed answer
 // for the duration of a test, following the issueRowCounter seam convention in
 // this package. The DBConn is never touched, so these run with no database.
 func stubSentinelTables(t *testing.T, present map[string]bool, probeErr error) *[]string {
@@ -84,8 +84,8 @@ func TestCursorContradictedBySchema(t *testing.T) {
 		// collapses: an absent leases table and a present-but-column-less leases
 		// table both drive sentinelColumnExists to false
 		// (columns["leases.granted_node"] == false), because the real
-		// schemaColumnExists COUNT(*) is 0 for a missing table and a missing
-		// column alike. They deliberately exercise the same branch — the naming
+		// schemaColumnExists answers false for a missing table and a missing
+		// column alike (probe_test.go covers both). They deliberately exercise the same branch — the naming
 		// records intent, not a distinct seam path.
 		{
 			name:    "leases table absent",
@@ -249,8 +249,7 @@ func TestMigrationWorkNeededWhenWispTablesAbsent(t *testing.T) {
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", LatestVersion())
 	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations", "version", LatestIgnoredVersion())
-	mock.ExpectQuery(regexp.QuoteMeta("FROM INFORMATION_SCHEMA.TABLES")).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectTableListed(mock, false)
 
 	needed, err := migrationWorkNeeded(context.Background(), db)
 	if err != nil {
@@ -280,11 +279,9 @@ func TestMigrationWorkNeededWhenLeaseGrantedNodeAbsent(t *testing.T) {
 	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations", "version", LatestIgnoredVersion())
 	for range ignoredSource.sentinelTables {
-		mock.ExpectQuery(regexp.QuoteMeta("FROM INFORMATION_SCHEMA.TABLES")).
-			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+		expectTableListed(mock, true)
 	}
-	mock.ExpectQuery(regexp.QuoteMeta("FROM INFORMATION_SCHEMA.COLUMNS")).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectColumnExists(mock, false)
 
 	needed, err := migrationWorkNeeded(context.Background(), db)
 	if err != nil {
@@ -326,8 +323,7 @@ func TestMigrateAppliesUnderContradictedCursor(t *testing.T) {
 	// The guarded read: cursor claims at-latest, sentinel probe contradicts it.
 	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations", "version", LatestIgnoredVersion())
-	mock.ExpectQuery(regexp.QuoteMeta("FROM INFORMATION_SCHEMA.TABLES")).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectTableListed(mock, false)
 
 	// The proof: the applier reaches ignored/0001's SQL. Fail it distinctively
 	// rather than mocking the whole series.
